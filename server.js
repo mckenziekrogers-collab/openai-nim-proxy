@@ -20,14 +20,15 @@ const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
 const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter
 
-// Model mapping - using faster, more reliable models + DeepSeek
+// Model mapping - CORRECT DeepSeek names with underscores
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'meta/llama-3.1-8b-instruct',
   'gpt-4': 'deepseek-ai/deepseek-v3_1',
-  'gpt-4-turbo': 'deepseek-ai/deepseek-v3_1',
+  'gpt-4-turbo': 'deepseek-ai/deepseek-v3_1-terminus',
   'gpt-4o': 'deepseek-ai/deepseek-v3_1',
   'deepseek': 'deepseek-ai/deepseek-v3_1',
   'deepseek-r1': 'deepseek-ai/deepseek-r1',
+  'deepseek-r1-new': 'deepseek-ai/deepseek-r1-0528',
   'claude-3-opus': 'meta/llama-3.1-405b-instruct',
   'claude-3-sonnet': 'meta/llama-3.1-70b-instruct',
   'gemini-pro': 'meta/llama-3.1-70b-instruct'
