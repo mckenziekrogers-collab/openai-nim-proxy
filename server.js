@@ -59,11 +59,24 @@ app.get('/v1/models', (req, res) => {
 // Chat completions endpoint (main proxy)
 app.post('/v1/chat/completions', async (req, res) => {
   try {
-    const { model, messages, temperature, max_tokens, stream } = req.body;
-    
-   // Smart model selection with fallback - FIXED VERSION
-let nimModel = MODEL_MAPPING[model];
+ const { model, messages, temperature, max_tokens, stream } = req.body;
 
+// Validate required fields
+if (!messages || !Array.isArray(messages) || messages.length === 0) {
+  return res.status(400).json({
+    error: {
+      message: 'messages field is required and must be a non-empty array',
+      type: 'invalid_request_error',
+      code: 400
+    }
+  });
+}
+
+// Set default model if not provided
+const requestModel = model || 'gpt-4o';
+console.log('Requested model:', requestModel);
+    
+  let nimModel = MODEL_MAPPING[requestModel];
 // If model is undefined or not mapped, use fallback logic
 if (!nimModel && model) {
   try {
