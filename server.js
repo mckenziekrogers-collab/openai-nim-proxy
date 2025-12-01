@@ -8,7 +8,8 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // NVIDIA NIM API configuration
 const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
@@ -19,6 +20,15 @@ const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
 const ENABLE_THINKING_MODE = false; // Set to true to enable chat_template_kwargs thinking parameter
+const ENABLE_THINKING_MODE = false;
+
+// 🔥 CONTEXT MANAGEMENT SETTINGS - Optimized for long fanfic planning chats
+const MAX_CONTEXT_MESSAGES = 20; // Keep last N messages (higher = more memory, but bigger payload)
+const SUMMARIZATION_TRIGGER = 15; // When history exceeds this, create summary
+const PRESERVE_SYSTEM_PROMPT = true; // Always keep system message
+const PRESERVE_RECENT_MESSAGES = 8; // Always keep this many recent messages intact
+
+// Model mapping (adjust based on available NIM models)
 
 // Model mapping - DeepSeek models that actually work!
 const MODEL_MAPPING = {
@@ -34,13 +44,101 @@ const MODEL_MAPPING = {
   'gemini-pro': 'deepseek-ai/deepseek-r1-distill-qwen-7b'
 };
 
+};
+
+// Helper: Count tokens (rough estimate: ~4 chars = 1 token)
+function estimateTokens(text) {
+  return Math.ceil(text.length / 4);
+}
+
+// Helper: Estimate total tokens in messages array
+function estimateTotalTokens(messages) {
+  return messages.reduce((total, msg) => {
+    const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+    return total + estimateTokens(content);
+  }, 0);
+}
+
+// Helper: Create summary of older messages using AI
+async function createConversationSummary(messages) {
+  try {
+    const summaryPrompt = `Summarize this conversation history concisely, preserving key plot points, character details, story arcs, and important decisions. Focus on what's essential for continuing the fanfic planning:\n\n${messages.map(m => `${m.role}: ${m.content}`).join('\n\n')}`;
+    
+    const response = await axios.post(`${NIM_API_BASE}/chat/completions`, {
+      model: 'meta/llama-3.1-8b-instruct', // Fast model for summaries
+      messages: [{ role: 'user', content: summaryPrompt }],
+      max_tokens: 500,
+      temperature: 0.3
+    }, {
+      headers: {
+        'Authorization': `Bearer ${NIM_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    return response.data.choices[0].message.content;
+  } catch (error) {
+    console.error('Summary creation failed:', error.message);
+    // Fallback: simple concatenation
+    return messages.map(m => `${m.role}: ${m.content.substring(0, 200)}`).join('\n');
+  }
+}
+
+// Helper: Intelligent context compression for long conversations
+async function compressContext(messages) {
+  if (messages.length <= MAX_CONTEXT_MESSAGES) {
+    return messages;
+  }
+  
+  const systemMessage = PRESERVE_SYSTEM_PROMPT ? messages.find(m => m.role === 'system') : null;
+  const nonSystemMessages = messages.filter(m => m.role !== 'system');
+  
+  // Keep recent messages intact
+  const recentMessages = nonSystemMessages.slice(-PRESERVE_RECENT_MESSAGES);
+  const olderMessages = nonSystemMessages.slice(0, -PRESERVE_RECENT_MESSAGES);
+  
+  // If we still need to compress
+  if (olderMessages.length > SUMMARIZATION_TRIGGER) {
+    console.log(`Compressing ${olderMessages.length} older messages into summary...`);
+    
+    // Create summary of older messages
+    const summary = await createConversationSummary(olderMessages);
+    
+    const summaryMessage = {
+      role: 'system',
+      content: `[Previous conversation summary]: ${summary}`
+    };
+    
+    // Build final context: system + summary + recent messages
+    const compressed = [];
+    if (systemMessage) compressed.push(systemMessage);
+    compressed.push(summaryMessage);
+    compressed.push(...recentMessages);
+    
+    console.log(`Context compressed: ${messages.length} → ${compressed.length} messages`);
+    return compressed;
+  }
+  
+  // Just trim without summary if not too long
+  const trimmed = [];
+  if (systemMessage) trimmed.push(systemMessage);
+  trimmed.push(...nonSystemMessages.slice(-MAX_CONTEXT_MESSAGES));
+  
+  console.log(`Context trimmed: ${messages.length} → ${trimmed.length} messages`);
+  return trimmed;
+}
+
+// Health check endpoint
+app.get('/health', (req, res) => {
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    service: 'OpenAI to NVIDIA NIM Proxy', 
+    service: 'OpenAI to NVIDIA NIM Proxy (Long Chat Optimized)', 
     reasoning_display: SHOW_REASONING,
-    thinking_mode: ENABLE_THINKING_MODE
+    thinking_mode: ENABLE_THINKING_MODE,
+    max_context_messages: MAX_CONTEXT_MESSAGES,
+    compression_enabled: true
   });
 });
 
@@ -63,6 +161,15 @@ app.get('/v1/models', (req, res) => {
 app.post('/v1/chat/completions', async (req, res) => {
   try {
     const { model, messages, temperature, max_tokens, stream } = req.body;
+    
+    console.log(`Incoming request: ${messages.length} messages, ~${estimateTotalTokens(messages)} tokens`);
+    
+    // Apply intelligent context compression
+    const compressedMessages = await compressContext(messages);
+    
+    console.log(`After compression: ${compressedMessages.length} messages, ~${estimateTotalTokens(compressedMessages)} tokens`);
+    
+    // Smart model selection with fallback
     
     // Smart model selection with fallback
     let nimModel = MODEL_MAPPING[model];
@@ -95,10 +202,11 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
     
     // Transform OpenAI request to NIM format
-    const nimRequest = {
-      model: nimModel,
-      messages: messages,
-      temperature: temperature || 0.6,
+  // Transform OpenAI request to NIM format with compressed context
+const nimRequest = {
+  model: nimModel,
+  messages: compressedMessages,
+  temperature: temperature || 0.6,
       max_tokens: max_tokens || 9024,
       extra_body: ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : undefined,
       stream: stream || false
@@ -246,4 +354,6 @@ app.listen(PORT, () => {
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Reasoning display: ${SHOW_REASONING ? 'ENABLED' : 'DISABLED'}`);
   console.log(`Thinking mode: ${ENABLE_THINKING_MODE ? 'ENABLED' : 'DISABLED'}`);
+  console.log(`Context compression: ENABLED (max ${MAX_CONTEXT_MESSAGES} messages)`);
+  console.log(`Long chat optimization: ACTIVE`);
 });
